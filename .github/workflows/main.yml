@@ -2,20 +2,13 @@ name: Daily Instagram Auto Poster
 
 on:
   schedule:
-    # UTC Time use hota hai. (IST = UTC + 5:30)
-    # 04:30 UTC = 10:00 AM IST
-    # 14:30 UTC = 08:00 PM IST
     - cron: '30 4 * * *'
     - cron: '30 14 * * *'
-  
-  # Manually run karne ke liye button
   workflow_dispatch:
 
 jobs:
   run_poster:
     runs-on: ubuntu-latest
-    
-    # Ye permission zaroori hai taaki script history file update kar sake
     permissions:
       contents: write
 
@@ -34,19 +27,24 @@ jobs:
 
       - name: Run Python Script
         env:
-          # Settings > Secrets and variables > Actions me ye values dalein
+          # Yahan hum secrets pass kar rahe hain script ko
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          INSTAGRAM_USER: ${{ secrets.INSTAGRAM_USER }}
+          INSTAGRAM_PASS: ${{ secrets.INSTAGRAM_PASS }}
         run: python main.py
 
-      - name: Save History (Commit changes)
-        # Ye step bahut important hai!
-        # Ye 'video_queue.json' ko wapis repo me save karega taaki 
-        # agli baar script ko yaad rahe ki kya post ho chuka hai.
+      - name: Save History
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
-          git add video_queue.json
-          git commit -m "Update posted video history" || echo "No new videos to save"
-          git push
+          
+          # Check karega file hai ya nahi taaki error na aaye
+          if [ -f video_queue.json ]; then
+            git add video_queue.json
+            git commit -m "Update posted video history" || echo "No changes to commit"
+            git push
+          else
+            echo "History file not found, skipping save."
+          fi
