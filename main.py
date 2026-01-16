@@ -2,25 +2,33 @@ import instaloader
 import requests
 import os
 import json
+import time
 from datetime import datetime
 
-# --- CONFIGURATION (Secrets Environment se aayenge) ---
-TARGET_USERNAME = "virtualaarvi"
+# --- CONFIGURATION ---
+TARGET_USERNAME = "virtualaarvi"  # Jiska video download karna hai
 DOWNLOAD_FOLDER = "downloads_temp"
 HISTORY_FILE = "video_queue.json"
 
+# Secrets se values load karna
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+IG_USER = os.getenv("INSTAGRAM_USER") 
+IG_PASS = os.getenv("INSTAGRAM_PASS") 
 
-# --- FUNCTIONS ---
+# --- SETUP ---
 L = instaloader.Instaloader()
 
+# History Load/Save Logic
 def load_history():
     if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            return json.load(f)
-    return {"processed": []} # Structure simplified
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {"processed": []}
+    return {"processed": []}
 
 def save_history(data):
     with open(HISTORY_FILE, "w") as f:
@@ -44,25 +52,38 @@ def send_to_webhook(file_path, caption, link):
             print("✅ Sent to Webhook.")
     except: pass
 
-# --- MAIN LOGIC (Run Once and Exit) ---
+# --- MAIN LOGIC ---
 def run_job():
     print(f"[{datetime.now()}] Job Started...")
+    
+    # 1. LOGIN PROCESS (New Step)
+    if IG_USER and IG_PASS:
+        try:
+            print(f"Attempting login as: {IG_USER}...")
+            L.login(IG_USER, IG_PASS)
+            print("✅ Login Successful!")
+        except Exception as e:
+            print(f"⚠️ Login Error: {e}")
+            print("Continuing anonymously (might fail if IP is blocked)...")
     
     if not os.path.exists(DOWNLOAD_FOLDER):
         os.makedirs(DOWNLOAD_FOLDER)
 
+    # Database initialize (Fixes the 'pathspec' error)
     data = load_history()
+    if not os.path.exists(HISTORY_FILE):
+        save_history(data)
+
     processed_ids = set(data["processed"])
 
-    # 1. Scan Profile
     try:
-        print("Scanning profile...")
+        print(f"Scanning target profile: {TARGET_USERNAME}...")
         profile = instaloader.Profile.from_username(L.context, TARGET_USERNAME)
         
         all_videos = []
-        # Sirf pehle 50 posts scan karenge speed ke liye (Optimization)
-        # Agar account naya hai to limit hata sakte hain
         count = 0
+        
+        # Sirf latest 20 posts scan karenge
         for post in profile.get_posts():
             if post.is_video:
                 all_videos.append({
@@ -71,12 +92,12 @@ def run_job():
                     "caption": post.caption if post.caption else ""
                 })
             count += 1
-            if count > 100: break # Safety limit
+            if count > 20: break 
 
-        # 2. Sort: Oldest First
+        # Sort: Oldest to Newest
         all_videos.sort(key=lambda x: x["date"])
 
-        # 3. Find Oldest Unsent Video
+        # Find Oldest Unsent Video
         target = None
         for vid in all_videos:
             if vid["shortcode"] not in processed_ids:
@@ -84,7 +105,7 @@ def run_job():
                 break
         
         if target:
-            print(f"🎯 Processing: {target['shortcode']}")
+            print(f"🎯 Found new video to process: {target['shortcode']}")
             post = instaloader.Post.from_shortcode(L.context, target['shortcode'])
             
             L.download_post(post, target=DOWNLOAD_FOLDER)
@@ -98,20 +119,21 @@ def run_job():
             
             if video_path:
                 link = f"https://www.instagram.com/p/{target['shortcode']}/"
+                
                 send_to_telegram(video_path, target['caption'])
                 send_to_webhook(video_path, target['caption'], link)
                 
                 # Update History
                 data["processed"].append(target['shortcode'])
                 save_history(data)
-                print("✅ History updated.")
+                print("✅ Process Complete.")
             else:
-                print("❌ Download failed.")
+                print("❌ Downloaded file not found.")
         else:
-            print("⚠️ No new videos to post.")
+            print("⚠️ No new videos pending in the last 20 posts.")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Main Error: {e}")
 
 if __name__ == "__main__":
     run_job()
