@@ -1,0 +1,52 @@
+name: Daily Instagram Auto Poster
+
+on:
+  schedule:
+    # UTC Time use hota hai. (IST = UTC + 5:30)
+    # 04:30 UTC = 10:00 AM IST
+    # 14:30 UTC = 08:00 PM IST
+    - cron: '30 4 * * *'
+    - cron: '30 14 * * *'
+  
+  # Manually run karne ke liye button
+  workflow_dispatch:
+
+jobs:
+  run_poster:
+    runs-on: ubuntu-latest
+    
+    # Ye permission zaroori hai taaki script history file update kar sake
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install instaloader requests
+
+      - name: Run Python Script
+        env:
+          # Settings > Secrets and variables > Actions me ye values dalein
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: python main.py
+
+      - name: Save History (Commit changes)
+        # Ye step bahut important hai!
+        # Ye 'video_queue.json' ko wapis repo me save karega taaki 
+        # agli baar script ko yaad rahe ki kya post ho chuka hai.
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          git add video_queue.json
+          git commit -m "Update posted video history" || echo "No new videos to save"
+          git push
