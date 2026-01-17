@@ -54,6 +54,21 @@ def send_to_webhook(file_path, caption, link):
 # --- MAIN LOGIC ---
 def run_job():
     print(f"[{datetime.now()}] Job Started...")
+
+    # --- NEW ADDITION: FIX FOR .TXT FILE NAME ---
+    # Ye code check karega ki agar file ka naam .txt hai to use sahi kar dega
+    session_txt = f"session-{IG_USER}.txt"
+    session_original = f"session-{IG_USER}"
+
+    if os.path.exists(session_txt):
+        print(f"🔄 Found .txt session file: {session_txt}")
+        # Agar original naam se pehle koi kharab file hai to use hata do
+        if os.path.exists(session_original):
+            os.remove(session_original)
+        # Rename karke sahi naam de do
+        os.rename(session_txt, session_original)
+        print(f"✅ File Renamed to: {session_original} (Ready for Login)")
+    # --------------------------------------------
     
     # 1. SMART LOGIN (Session File First -> Then Password)
     session_file_path = f"session-{IG_USER}"
