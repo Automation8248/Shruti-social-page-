@@ -1,2 +1,2 @@
-instaloader
+yt-dlp
 requests
