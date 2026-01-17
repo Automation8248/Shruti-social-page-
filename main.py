@@ -1,81 +1,70 @@
 import instaloader
-import requests
 import os
-from telegram import Bot
+import requests
+import json
 
-# ================= CONFIG =================
-INSTAGRAM_USERNAME = "virtualaarvi"
+USERNAME = "virtualaarvi"
 
-# 👉 Apna Telegram USER CHAT ID yahan daalo (number, quotes nahi)
-TELEGRAM_CHAT_ID = 8528694825  
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-LAST_FILE = "last_video.txt"
-VIDEO_FILE = "video.mp4"
-# =========================================
+L = instaloader.Instaloader(
+    download_videos=True,
+    download_video_thumbnails=False,
+    save_metadata=False,
+    compress_json=False
+)
 
-# Telegram Bot
-bot = Bot(token=TELEGRAM_TOKEN)
+# Login using session
+L.load_session_from_file(os.getenv("IG_USERNAME"), "session")
 
-# Instaloader
-L = instaloader.Instaloader(download_videos=False, save_metadata=False)
+profile = instaloader.Profile.from_username(L.context, USERNAME)
 
-profile = instaloader.Profile.from_username(L.context, INSTAGRAM_USERNAME)
+posts = list(profile.get_posts())
+posts.reverse()  # oldest → newest
 
-# Last posted video load
-last_shortcode = ""
-if os.path.exists(LAST_FILE):
-    last_shortcode = open(LAST_FILE, "r").read().strip()
+# Track last posted
+STATE_FILE = "state.json"
+last_index = 0
 
-for post in profile.get_posts():
+if os.path.exists(STATE_FILE):
+    last_index = json.load(open(STATE_FILE))["index"]
 
-    if not post.is_video:
-        continue
+post = posts[last_index]
 
-    # Agar ye video pehle bheja ja chuka hai → stop
-    if post.shortcode == last_shortcode:
+L.download_post(post, target="video")
+
+video_file = None
+for f in os.listdir("video"):
+    if f.endswith(".mp4"):
+        video_file = f
         break
 
-    # 🔗 Instagram video link (Copy link)
-    video_link = f"https://www.instagram.com/reel/{post.shortcode}/"
-
-    # 🎥 Direct mp4 URL
-    video_url = post.video_url
-
-    # 📝 Caption + hashtags
-    caption_text = post.caption if post.caption else ""
-
-    final_caption = (
-        f"{caption_text}\n\n"
-        f"🔗 {video_link}\n"
-        f"🎥 Credit: @{INSTAGRAM_USERNAME}"
+# Upload to catbox.moe
+with open(f"video/{video_file}", "rb") as f:
+    r = requests.post(
+        "https://catbox.moe/user/api.php",
+        data={"reqtype": "fileupload"},
+        files={"fileToUpload": f},
     )
 
-    # ⬇️ Video download (through link)
-    video_data = requests.get(video_url).content
-    with open(VIDEO_FILE, "wb") as f:
-        f.write(video_data)
+video_url = r.text.strip()
+caption = post.caption or "No caption"
 
-    # 📤 Send video to YOU (user)
-    bot.send_video(
-        chat_id=TELEGRAM_CHAT_ID,
-        video=open(VIDEO_FILE, "rb"),
-        caption=final_caption[:1024]  # Telegram limit
-    )
+message = f"{caption}\n\n🎬 {video_url}"
 
-    # 🌐 Webhook notify
-    if WEBHOOK_URL:
-        requests.post(WEBHOOK_URL, json={
-            "username": INSTAGRAM_USERNAME,
-            "video_link": video_link,
-            "caption": caption_text,
-            "status": "sent_to_user"
-        })
+# Send Telegram
+requests.post(
+    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+    json={"chat_id": CHAT_ID, "text": message}
+)
 
-    # 💾 Save last sent video
-    with open(LAST_FILE, "w") as f:
-        f.write(post.shortcode)
+# Send Webhook
+requests.post(
+    WEBHOOK_URL,
+    json={"text": message}
+)
 
-    break  # Daily sirf 1 video
+# Save progress
+json.dump({"index": last_index + 1}, open(STATE_FILE, "w"))
