@@ -3,66 +3,79 @@ import requests
 import os
 from telegram import Bot
 
-# ===== CONFIG =====
+# ================= CONFIG =================
 INSTAGRAM_USERNAME = "virtualaarvi"
-TELEGRAM_CHAT_ID = "@your_channel"
+
+# 👉 Apna Telegram USER CHAT ID yahan daalo (number, quotes nahi)
+TELEGRAM_CHAT_ID = 123456789  
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-LAST_FILE = "last_video.txt"
 
+LAST_FILE = "last_video.txt"
+VIDEO_FILE = "video.mp4"
+# =========================================
+
+# Telegram Bot
 bot = Bot(token=TELEGRAM_TOKEN)
-L = instaloader.Instaloader()
+
+# Instaloader
+L = instaloader.Instaloader(download_videos=False, save_metadata=False)
 
 profile = instaloader.Profile.from_username(L.context, INSTAGRAM_USERNAME)
 
-# Load last posted video
+# Last posted video load
 last_shortcode = ""
 if os.path.exists(LAST_FILE):
-    last_shortcode = open(LAST_FILE).read().strip()
+    last_shortcode = open(LAST_FILE, "r").read().strip()
 
 for post in profile.get_posts():
 
     if not post.is_video:
         continue
 
+    # Agar ye video pehle bheja ja chuka hai → stop
     if post.shortcode == last_shortcode:
         break
 
-    # 🔗 Instagram Video Link (Copy Link)
+    # 🔗 Instagram video link (Copy link)
     video_link = f"https://www.instagram.com/reel/{post.shortcode}/"
 
-    # 🎥 Direct Video URL
+    # 🎥 Direct mp4 URL
     video_url = post.video_url
 
-    # 📝 Caption + Hashtags
-    caption = post.caption if post.caption else ""
-    final_caption = f"""{caption}
+    # 📝 Caption + hashtags
+    caption_text = post.caption if post.caption else ""
 
-🔗 {video_link}
-🎥 Credit: @{INSTAGRAM_USERNAME}
-"""
+    final_caption = (
+        f"{caption_text}\n\n"
+        f"🔗 {video_link}\n"
+        f"🎥 Credit: @{INSTAGRAM_USERNAME}"
+    )
 
-    # Download video
+    # ⬇️ Video download (through link)
     video_data = requests.get(video_url).content
-    with open("video.mp4", "wb") as f:
+    with open(VIDEO_FILE, "wb") as f:
         f.write(video_data)
 
-    # Upload to Telegram
+    # 📤 Send video to YOU (user)
     bot.send_video(
         chat_id=TELEGRAM_CHAT_ID,
-        video=open("video.mp4", "rb"),
+        video=open(VIDEO_FILE, "rb"),
         caption=final_caption[:1024]  # Telegram limit
     )
 
-    # Webhook send
-    requests.post(WEBHOOK_URL, json={
-        "username": INSTAGRAM_USERNAME,
-        "video_link": video_link,
-        "caption": caption,
-        "status": "posted"
-    })
+    # 🌐 Webhook notify
+    if WEBHOOK_URL:
+        requests.post(WEBHOOK_URL, json={
+            "username": INSTAGRAM_USERNAME,
+            "video_link": video_link,
+            "caption": caption_text,
+            "status": "sent_to_user"
+        })
 
-    # Save last video
-    open(LAST_FILE, "w").write(post.shortcode)
+    # 💾 Save last sent video
+    with open(LAST_FILE, "w") as f:
+        f.write(post.shortcode)
 
-    break
+    break  # Daily sirf 1 video
