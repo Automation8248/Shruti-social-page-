@@ -1,56 +1,68 @@
-import instaloader
+import subprocess
 import requests
 
-USERNAME = "virtualaarvi"
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
-WEBHOOK_URL = "YOUR_WEBHOOK_URL"
+PROFILE_URL = "https://www.instagram.com/virtualaarvi/"
+TELEGRAM_BOT = "YOUR_BOT_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
+WEBHOOK_URL = "YOUR_WEBHOOK"
 
-L = instaloader.Instaloader(download_videos=True, download_pictures=False)
+# read index
+with open("last_index.txt", "r") as f:
+    index = int(f.read().strip())
 
-profile = instaloader.Profile.from_username(L.context, USERNAME)
+# get reels list
+cmd = [
+    "yt-dlp",
+    "--flat-playlist",
+    "--dump-json",
+    PROFILE_URL
+]
 
-# read last video
-with open("last_video.txt", "r") as f:
-    last_video = f.read().strip()
+result = subprocess.check_output(cmd).decode().splitlines()
 
-videos = [p for p in profile.get_posts() if p.is_video]
+videos = [line for line in result if '"url"' in line]
 videos.reverse()  # OLDEST → NEWEST
 
-for post in videos:
-    if post.shortcode == last_video:
-        continue
+if index >= len(videos):
+    print("No new videos")
+    exit()
 
-    # download video
-    L.download_post(post, target="video")
+video_data = videos[index]
 
-    video_file = [f for f in os.listdir("video") if f.endswith(".mp4")][0]
+# download video
+subprocess.run([
+    "yt-dlp",
+    "-o", "video.mp4",
+    PROFILE_URL
+])
 
-    # upload to catbox
+# upload to catbox
+with open("video.mp4", "rb") as f:
     r = requests.post(
         "https://catbox.moe/user/api.php",
         data={"reqtype": "fileupload"},
-        files={"file": open("video/" + video_file, "rb")}
+        files={"file": f}
     )
 
-    catbox_url = r.text
-    caption = post.caption or ""
+video_url = r.text
 
-    # send to telegram
-    telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(telegram_url, data={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": f"{caption}\n\n🎥 {catbox_url}"
-    })
+caption = "Repost from Instagram"
 
-    # send to webhook
-    requests.post(WEBHOOK_URL, json={
-        "video": catbox_url,
-        "caption": caption
-    })
+# send telegram
+requests.post(
+    f"https://api.telegram.org/bot{TELEGRAM_BOT}/sendMessage",
+    data={
+        "chat_id": CHAT_ID,
+        "text": f"{caption}\n\n🎥 {video_url}"
+    }
+)
 
-    # save progress
-    with open("last_video.txt", "w") as f:
-        f.write(post.shortcode)
+# webhook
+requests.post(WEBHOOK_URL, json={
+    "video": video_url,
+    "caption": caption
+})
 
-    break  # ONLY ONE VIDEO PER DAY
+# save progress
+with open("last_index.txt", "w") as f:
+    f.write(str(index + 1))
