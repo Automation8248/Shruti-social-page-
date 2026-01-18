@@ -14,7 +14,7 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 
-# Filler tags agar video ke tags kam pad jayein (Total 5 karne ke liye)
+# Filler tags (Total 5 hashtags maintain karne ke liye)
 SEO_TAGS = ["#reels", "#trending", "#viral", "#explore", "#love", "#shayari"]
 
 def get_next_video():
@@ -35,18 +35,53 @@ def get_next_video():
             return url
     return None
 
-def get_hindi_title(text):
+# --- NEW LOGIC: Extract Audio Text -> Translate -> Take 4 Words ---
+def get_audio_text_hindi(vtt_file_path, fallback_title):
     try:
-        # Translate full title to Hindi
-        translated = GoogleTranslator(source='auto', target='hi').translate(text)
-        # Split into words and take first 4
+        # 1. Read Subtitle File
+        with open(vtt_file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        # 2. Clean VTT junk (timestamps, tags, header)
+        lines = content.splitlines()
+        spoken_text = []
+        for line in lines:
+            if '-->' in line or line.strip() == '' or line.startswith('WEBVTT') or line.strip().isdigit():
+                continue
+            # Remove HTML-like tags <c> etc
+            clean = re.sub(r'<[^>]+>', '', line).strip()
+            # Remove timestamps inside text if any
+            clean = re.sub(r'\d{2}:\d{2}:\d{2}\.\d{3}', '', clean)
+            if clean and clean not in spoken_text:
+                spoken_text.append(clean)
+        
+        # Join first few lines to get context
+        full_spoken_text = " ".join(spoken_text[:3]) 
+        
+        if not full_spoken_text:
+            print("⚠️ No spoken text found, using Title as fallback.")
+            full_spoken_text = fallback_title
+
+        print(f"🗣️ Original Spoken: {full_spoken_text}")
+
+        # 3. Translate to Hindi
+        translated = GoogleTranslator(source='auto', target='hi').translate(full_spoken_text)
+        print(f"🇮🇳 Hindi Translated: {translated}")
+        
+        # 4. Take First 4 Words
         words = translated.split()
-        short_title = " ".join(words[:4])
-        return short_title
+        final_4_words = " ".join(words[:4])
+        
+        return final_4_words
+
     except Exception as e:
-        print(f"Translation Error: {e}")
-        # Fallback: First 4 words of original text if translation fails
-        return " ".join(text.split()[:4])
+        print(f"❌ Audio Text Error: {e}")
+        # Fallback to Title if subtitle parsing fails
+        try:
+            fallback = GoogleTranslator(source='auto', target='hi').translate(fallback_title)
+            return " ".join(fallback.split()[:4])
+        except:
+            return "New Video Update"
 
 def generate_hashtags(original_tags):
     final_tags = []
@@ -55,7 +90,7 @@ def generate_hashtags(original_tags):
     final_tags.append("#aarvi")
     
     # 2. Add video's original tags (excluding forbidden ones)
-    forbidden = ["virtualaarvi", "aarvi"] # aarvi already added manually
+    forbidden = ["virtualaarvi", "aarvi"]
     
     for tag in original_tags:
         clean_tag = tag.replace(" ", "").lower()
@@ -70,7 +105,6 @@ def generate_hashtags(original_tags):
         else:
             break
             
-    # Limit to exactly 5 tags
     return " ".join(final_tags[:5])
 
 def download_video_data(url):
@@ -79,13 +113,18 @@ def download_video_data(url):
         try: os.remove(f)
         except: pass
 
+    # Settings to force download subtitles (Auto-generated)
     ydl_opts = {
         'format': 'best[ext=mp4]',
         'outtmpl': 'temp_video.%(ext)s',
         'quiet': True,
+        'writesubtitles': True,
+        'writeautomaticsub': True, # Important: Gets auto-generated speech-to-text
+        'subtitleslangs': ['en', 'hi', 'auto'], # Get English/Hindi/Auto
     }
     
     dl_filename = None
+    hindi_content_text = ""
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -93,12 +132,20 @@ def download_video_data(url):
             dl_filename = ydl.prepare_filename(info)
             title = info.get('title', 'No Title')
             
-            # --- Generate Hindi Title (First 4 words) ---
-            hindi_4_words = get_hindi_title(title)
-            
-            # --- Generate Hashtags (Total 5) ---
+            # --- HASHTAGS ---
             tags_list = info.get('tags', [])
             hashtags = generate_hashtags(tags_list)
+
+            # --- PROCESS CAPTIONS FOR CONTENT ---
+            # Find the .vtt file
+            sub_files = glob.glob("temp_video*.vtt")
+            if sub_files:
+                print(f"✅ Subtitles found (Audio content available).")
+                hindi_content_text = get_audio_text_hindi(sub_files[0], title)
+            else:
+                print("⚠️ No subtitles found. Using Title Translation.")
+                trans_title = GoogleTranslator(source='auto', target='hi').translate(title)
+                hindi_content_text = " ".join(trans_title.split()[:4])
 
     except Exception as e:
         print(f"❌ Download Error: {e}")
@@ -106,14 +153,14 @@ def download_video_data(url):
 
     return {
         "filename": dl_filename,
-        "title": title,          # Original Title (for Webhook)
-        "hindi_text": hindi_4_words, # Processed Hindi Text (for Telegram)
+        "title": title,
+        "hindi_text": hindi_content_text, # This is now from Audio/Speech
         "hashtags": hashtags,
         "original_url": url
     }
 
 def upload_to_catbox(filepath):
-    print("🚀 Uploading to Catbox (for Webhook)...")
+    print("🚀 Uploading to Catbox...")
     try:
         with open(filepath, "rb") as f:
             response = requests.post(
@@ -131,15 +178,15 @@ def upload_to_catbox(filepath):
 def send_notifications(video_data, catbox_url):
     print("\n--- Sending Notifications ---")
     
-    # --- Format Caption for Telegram ---
-    # 1. Hindi 4 words
-    # 2. 5 Dots spacing
+    # --- Caption Format ---
+    # 1. Hindi words from SPEECH
+    # 2. 5 Dots
     # 3. 5 Hashtags
     tg_caption = f"{video_data['hindi_text']}\n.\n.\n.\n.\n.\n{video_data['hashtags']}"
     
-    # --- 1. TELEGRAM (Send Video File) ---
+    # --- 1. TELEGRAM ---
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        print("📤 Sending Video File to Telegram...")
+        print("📤 Sending Video...")
         tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
         
         try:
@@ -151,19 +198,16 @@ def send_notifications(video_data, catbox_url):
                 }
                 files = {'video': video_file}
                 resp = requests.post(tg_url, data=payload, files=files)
-                
-                if resp.status_code == 200:
-                    print("✅ Telegram Video Sent!")
-                else:
-                    print(f"❌ Telegram Fail: {resp.text}")
+                if resp.status_code == 200: print("✅ Telegram Success!")
+                else: print(f"❌ Telegram Fail: {resp.text}")
         except Exception as e:
             print(f"❌ Telegram Error: {e}")
 
-    # --- 2. WEBHOOK (Send Link + Caption) ---
+    # --- 2. WEBHOOK ---
     if WEBHOOK_URL:
         print(f"Sending to Webhook...")
         webhook_payload = {
-            "content": tg_caption,  # Same caption for consistency
+            "content": tg_caption,
             "video_url": catbox_url,
             "title_original": video_data['title'],
             "hashtags": video_data['hashtags']
@@ -171,8 +215,7 @@ def send_notifications(video_data, catbox_url):
         try:
             requests.post(WEBHOOK_URL, json=webhook_payload)
             print("✅ Webhook Sent!")
-        except:
-            print("❌ Webhook Failed")
+        except: pass
 
 def update_history(url):
     with open(HISTORY_FILE, 'a') as f:
@@ -180,23 +223,19 @@ def update_history(url):
 
 if __name__ == "__main__":
     next_url = get_next_video()
-    
     if not next_url:
         print("💤 No new videos.")
         sys.exit(0)
-        
-    data = download_video_data(next_url)
     
+    data = download_video_data(next_url)
     if data and data['filename']:
-        # Catbox upload is needed for Webhook link
         catbox_link = upload_to_catbox(data['filename'])
         if not catbox_link: catbox_link = "Upload Failed"
-
+        
         send_notifications(data, catbox_link)
         update_history(next_url)
         
-        if os.path.exists(data['filename']):
-            os.remove(data['filename'])
+        if os.path.exists(data['filename']): os.remove(data['filename'])
         print("✅ Task Done.")
     else:
         sys.exit(1)
