@@ -1,72 +1,73 @@
-import subprocess
 import os
+import subprocess
 import requests
+import sys
 
-PROFILE_URL = "https://www.instagram.com/virtualaarvi/"
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
-WEBHOOK_URL = "YOUR_WEBHOOK_URL"
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-USED_FILE = "used.txt"
+# Load all links
+with open("links.txt", "r") as f:
+    all_links = [l.strip() for l in f if l.strip()]
 
-if not os.path.exists(USED_FILE):
-    open(USED_FILE, "w").close()
+# Load used links
+if not os.path.exists("used.txt"):
+    open("used.txt", "w").close()
 
-with open(USED_FILE, "r") as f:
-    used = f.read().splitlines()
+with open("used.txt", "r") as f:
+    used_links = set(l.strip() for l in f if l.strip())
 
-# Get all video URLs (oldest first)
-result = subprocess.check_output([
-    "yt-dlp",
-    "--flat-playlist",
-    "--playlist-reverse",
-    "-J",
-    PROFILE_URL
-]).decode()
-
-import json
-data = json.loads(result)
-
-next_video = None
-for entry in data["entries"]:
-    url = entry["url"]
-    if url not in used:
-        next_video = url
+# Pick next unused link (NO REPEAT)
+next_link = None
+for link in all_links:
+    if link not in used_links:
+        next_link = link
         break
 
-if not next_video:
-    print("No new video found")
-    exit()
+if not next_link:
+    print("✅ All videos already posted. No repeat.")
+    sys.exit(0)
 
 # Download video + caption
 subprocess.run([
     "yt-dlp",
-    next_video,
+    next_link,
     "-o", "video.%(ext)s",
     "--merge-output-format", "mp4",
     "--write-description"
-])
+], check=True)
 
-# Read caption
+# Read caption + hashtags
 caption = ""
 if os.path.exists("video.description"):
     with open("video.description", "r", encoding="utf-8") as f:
-        caption = f.read()
+        caption = f.read().strip()
 
 # Send to Telegram
-with open("video.mp4", "rb") as v:
+with open("video.mp4", "rb") as video:
     requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo",
-        data={"chat_id": CHAT_ID, "caption": caption[:1024]},
-        files={"video": v}
+        data={
+            "chat_id": CHAT_ID,
+            "caption": caption[:1024]
+        },
+        files={"video": video},
+        timeout=30
     )
 
 # Send to Webhook
-requests.post(WEBHOOK_URL, json={
-    "video": next_video,
-    "caption": caption
-})
+requests.post(
+    WEBHOOK_URL,
+    json={
+        "source": next_link,
+        "caption": caption
+    },
+    timeout=30
+)
 
-# Mark as used
-with open(USED_FILE, "a") as f:
-    f.write(next_video + "\n")
+# Mark link as used (PREVENT REPEAT)
+with open("used.txt", "a") as f:
+    f.write(next_link + "\n")
+
+print("✅ Video posted successfully")
