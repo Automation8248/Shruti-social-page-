@@ -2,7 +2,7 @@ import os
 import requests
 import sys
 import time
-import random
+import instaloader
 from deep_translator import GoogleTranslator
 
 # --- CONFIGURATION ---
@@ -13,19 +13,7 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 
-# --- NEW WORKING SERVER LIST (2026 Updated) ---
-# Ye alag-alag servers hain. Agar ek fail hoga to dusra try karega.
-COBALT_INSTANCES = [
-    "https://cobalt.tools",           # Official
-    "https://api.cobalt.tools",       # Official API
-    "https://cobalt.gamemonk.net",    # Mirror 1
-    "https://cobalt.lanex.dev",       # Mirror 2
-    "https://cobalt.unbound.sh",      # Mirror 3
-    "https://cobalt.int.r4fo.com",    # Mirror 4
-]
-
 SEO_TAGS = ["#reels", "#trending", "#viral", "#explore", "#love", "#shayari"]
-FORBIDDEN_WORDS = ["virtualaarvi", "aarvi", "video by", "uploaded by", "subscribe", "channel"]
 
 # --- HELPER FUNCTIONS ---
 
@@ -47,83 +35,74 @@ def get_next_video():
             return url
     return None
 
-def download_via_cobalt(url):
-    print(f"🔄 Trying to download via API (No Cookies Needed)...")
-    
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
-    
-    payload = {
-        "url": url,
-        "vCodec": "h264",
-        "vQuality": "720",
-        "filenamePattern": "basic"
-    }
+def translate_text(text):
+    if not text: return "✨ New Reel"
+    try:
+        translated = GoogleTranslator(source='auto', target='hi').translate(text)
+        return " ".join(translated.split()[:6])
+    except:
+        return "✨ New Reel"
 
-    download_url = None
+def download_instagram_video(url):
+    print(f"🔄 Trying to download using Instaloader: {url}")
     
-    # Randomize list taaki load balance ho jaye
-    random.shuffle(COBALT_INSTANCES)
-
-    for instance in COBALT_INSTANCES:
-        try:
-            # URL formatting check
-            base_url = instance.rstrip('/')
-            api_url = f"{base_url}/api/json"
-            
-            print(f"📡 Connecting to: {base_url} ...")
-            resp = requests.post(api_url, json=payload, headers=headers, timeout=10)
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                if 'url' in data:
-                    download_url = data['url']
-                    print(f"✅ Video Link Found from {base_url}!")
-                    break
-                elif 'picker' in data: # Kabhi kabhi wo list bhejta hai
-                     for item in data['picker']:
-                         if item['type'] == 'video':
-                             download_url = item['url']
-                             break
-                     if download_url: break
-
-            print(f"⚠️ Failed on {base_url} (Status: {resp.status_code})")
-            
-        except Exception as e:
-            print(f"⚠️ Connection Error on {instance}: {str(e)[:50]}...")
-            continue
-            
-    if not download_url:
-        print("❌ All APIs failed. Instagram might be blocking these servers right now.")
+    # Shortcode nikalo URL se
+    try:
+        if "/reel/" in url:
+            shortcode = url.split("/reel/")[1].split("/")[0]
+        elif "/p/" in url:
+            shortcode = url.split("/p/")[1].split("/")[0]
+        else:
+            print("❌ Invalid URL format")
+            return None
+    except:
+        print("❌ Could not parse URL")
         return None
 
-    # Download File
+    # Instaloader Setup
+    L = instaloader.Instaloader()
+    
+    # AGAR YE FAIL HOTA HAI TO SIRF COOKIES HI BACHA SAKTI HAIN
     try:
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        
+        # Video URL mil gaya
+        video_url = post.video_url
+        caption = post.caption
+        
+        if not video_url:
+            print("❌ No video found in post.")
+            return None
+
         print("⬇️ Downloading video file...")
-        file_resp = requests.get(download_url, stream=True, timeout=30)
+        response = requests.get(video_url, stream=True)
         filename = "final_video.mp4"
         with open(filename, 'wb') as f:
-            for chunk in file_resp.iter_content(chunk_size=1024):
+            for chunk in response.iter_content(chunk_size=1024):
                 if chunk: f.write(chunk)
-        return filename
+                
+        return {
+            "filename": filename,
+            "caption": caption,
+            "shortcode": shortcode
+        }
+
     except Exception as e:
-        print(f"❌ File Save Error: {e}")
+        print(f"❌ Instaloader Error: {e}")
+        print("⚠️ GitHub Server IP is heavily blocked by Instagram.")
         return None
 
 def process_video(url):
-    filename = download_via_cobalt(url)
-    if not filename: return None
+    data = download_instagram_video(url)
+    if not data: return None
 
-    # Generic Metadata (Since API doesn't give details)
-    hindi_text = "✨ देखिए आज का शानदार वीडियो! ❤️"
-    hashtags = "#reels #trending #viral #explore " + " ".join(SEO_TAGS[:3])
+    # Processing Text
+    hindi_text = translate_text(data['caption'])
+    hashtags = "#reels #trending " + " ".join(SEO_TAGS[:3])
 
     return {
-        "filename": filename,
-        "title": "Instagram Reel",
+        "filename": data['filename'],
+        "title": f"Reel {data['shortcode']}",
         "hindi_text": hindi_text,
         "hashtags": hashtags,
         "original_url": url
@@ -144,7 +123,6 @@ def send_notifications(video_data, catbox_url):
     tg_caption = f"{video_data['hindi_text']}\n.\n.\n{video_data['hashtags']}"
     
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        print("📤 Telegram Video Sending...")
         tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
         try:
             with open(video_data['filename'], 'rb') as video_file:
@@ -155,7 +133,6 @@ def send_notifications(video_data, catbox_url):
         except Exception as e: print(f"❌ Telegram Error: {e}")
 
     if WEBHOOK_URL and catbox_url:
-        print(f"📤 Webhook Sending...")
         payload = {"content": tg_caption, "video_url": catbox_url}
         try: requests.post(WEBHOOK_URL, json=payload, timeout=30)
         except: pass
