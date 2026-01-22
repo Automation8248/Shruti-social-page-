@@ -1,18 +1,24 @@
 import os
 import requests
-import yt_dlp
 import sys
-import glob
 import re
+import time
 from deep_translator import GoogleTranslator
 
 # --- CONFIGURATION ---
 VIDEO_LIST_FILE = 'videos.txt'
 HISTORY_FILE = 'history.txt'
-# Environment variables se data le rahe hain (Make sure ye set ho)
+
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+
+# Public APIs (Agar ek fail ho to dusra try karega)
+COBALT_INSTANCES = [
+    "https://api.cobalt.tools",
+    "https://cobalt.kwiatekmiki.pl",
+    "https://cobalt.q1.si",
+]
 
 SEO_TAGS = ["#reels", "#trending", "#viral", "#explore", "#love", "#shayari"]
 FORBIDDEN_WORDS = ["virtualaarvi", "aarvi", "video by", "uploaded by", "subscribe", "channel"]
@@ -47,140 +53,85 @@ def is_text_safe(text):
 
 def translate_and_shorten(text):
     if not text or not text.strip(): return None
-    
-    # Koshish karein translate karne ki
     try:
         translated = GoogleTranslator(source='auto', target='hi').translate(text)
         if is_text_safe(translated):
             words = translated.split()
-            return " ".join(words[:4])
-    except Exception as e:
-        print(f"⚠️ Translation Failed: {e}")
+            return " ".join(words[:5])
+    except: pass
     
-    # Agar translation fail ho, to original text use karein (Fallback)
     if is_text_safe(text):
         words = text.split()
-        return " ".join(words[:4])
-    
-    return None
-
-def get_smart_caption_text(vtt_file_path, description, title):
-    # 1. AUDIO CHECK (Subtitles)
-    if vtt_file_path and os.path.exists(vtt_file_path):
-        try:
-            with open(vtt_file_path, 'r', encoding='utf-8') as f: content = f.read()
-            lines = content.splitlines()
-            spoken_text = []
-            for line in lines:
-                # VTT formatting clean karna
-                if '-->' in line or line.strip() == '' or line.startswith('WEBVTT') or line.isdigit(): continue
-                clean = re.sub(r'<[^>]+>', '', line).strip()
-                clean = re.sub(r'\[.*?\]', '', clean)
-                if clean and clean not in spoken_text: spoken_text.append(clean)
-            
-            full_speech = " ".join(spoken_text[:3])
-            hindi_audio = translate_and_shorten(full_speech)
-            if hindi_audio: return hindi_audio
-        except Exception as e: print(f"⚠️ VTT Error: {e}")
-
-    # 2. DESCRIPTION CHECK
-    if description:
-        clean_desc = description.split('\n')[0]
-        clean_desc = re.sub(r'#\w+', '', clean_desc).strip()
-        hindi_desc = translate_and_shorten(clean_desc)
-        if hindi_desc: return hindi_desc
-
-    # 3. TITLE CHECK
-    if title:
-        clean_title = re.sub(r'#\w+', '', title).strip()
-        hindi_title = translate_and_shorten(clean_title)
-        if hindi_title: return hindi_title
-
+        return " ".join(words[:5])
     return "देखिए आज का वीडियो"
 
-def generate_hashtags(original_tags):
-    final_tags = ["#aarvi"]
-    forbidden = ["virtualaarvi", "aarvi"]
+def download_via_cobalt(url):
+    print(f"🔄 Trying to download via API (No Cookies Needed)...")
     
-    if original_tags:
-        for tag in original_tags:
-            clean_tag = tag.replace(" ", "").lower()
-            if clean_tag not in forbidden and f"#{clean_tag}" not in final_tags:
-                final_tags.append(f"#{clean_tag}")
-    
-    # Tags kam hain to SEO tags add karein
-    for seo in SEO_TAGS:
-        if len(final_tags) < 6:
-            if seo not in final_tags: final_tags.append(seo)
-        else: break
-    return " ".join(final_tags[:6])
-
-def download_video_data(url):
-    print(f"⬇️ Downloading: {url}")
-    
-    # Purane temp files delete karein
-    for f in glob.glob("temp_video*"):
-        try: os.remove(f)
-        except: pass
-
-    # --- SUDHAR 1: Anti-Block Headers ---
-    ydl_opts = {
-        'format': 'best', # Best available quality
-        'outtmpl': 'temp_video.%(ext)s',
-        'quiet': True,
-        'writesubtitles': True,
-        'writeautomaticsub': True,
-        'subtitleslangs': ['en', 'hi', 'auto'],
-        
-        # Security Bypass Settings
-        'nocheckcertificate': True,
-        'ignoreerrors': True,
-        'no_warnings': True,
-        'geo_bypass': True,
-        # Fake User Agent (Mobile Browser jaisa dikhne ke liye)
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'referer': 'https://www.instagram.com/',
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
     
-    dl_filename = None
-    final_hindi_text = ""
+    payload = {
+        "url": url,
+        "videoQuality": "max",
+        "filenamePattern": "basic"
+    }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if not info: return None
-
-            title = info.get('title', '')
-            desc = info.get('description', '')
-            hashtags = generate_hashtags(info.get('tags', []))
+    download_url = None
+    
+    # Try different servers if one fails
+    for instance in COBALT_INSTANCES:
+        try:
+            print(f"📡 Connecting to: {instance}")
+            api_url = f"{instance}/api/json"
+            resp = requests.post(api_url, json=payload, headers=headers, timeout=15)
             
-            # --- SUDHAR 2: Sahi file dhundna ---
-            # yt-dlp kabhi .mp4 kabhi .mkv karta hai, isliye glob use kiya
-            found_files = glob.glob("temp_video*")
-            # Filter to keep only video/audio files (exclude subtitles)
-            video_files = [f for f in found_files if not f.endswith('.vtt')]
+            if resp.status_code == 200:
+                data = resp.json()
+                if 'url' in data:
+                    download_url = data['url']
+                    print("✅ Video Link Found!")
+                    break
+            elif resp.status_code == 429:
+                print("⚠️ Server busy, trying next...")
+                continue
+        except Exception as e:
+            print(f"⚠️ Error on {instance}: {e}")
+            continue
             
-            if video_files:
-                dl_filename = video_files[0]
-            else:
-                print("❌ File downloaded but not found on disk.")
-                return None
-
-            # Subtitle check
-            vtt_file = None
-            sub_files = glob.glob("temp_video*.vtt")
-            if sub_files: vtt_file = sub_files[0]
-            
-            final_hindi_text = get_smart_caption_text(vtt_file, desc, title)
-
-    except Exception as e:
-        print(f"❌ Download Error: {e}")
+    if not download_url:
+        print("❌ All APIs failed to fetch video.")
         return None
 
+    # Now download the actual file
+    try:
+        file_resp = requests.get(download_url, stream=True)
+        filename = "final_video.mp4"
+        with open(filename, 'wb') as f:
+            for chunk in file_resp.iter_content(chunk_size=1024):
+                if chunk: f.write(chunk)
+        return filename
+    except Exception as e:
+        print(f"❌ File Save Error: {e}")
+        return None
+
+def process_video(url):
+    # 1. Download Video
+    filename = download_via_cobalt(url)
+    if not filename: return None
+
+    # 2. Generate Basic Data (Since we are not scraping metadata heavily)
+    # API metadata nahi deta, to hum generic use karenge
+    hindi_text = "✨ देखिए आज का शानदार वीडियो! ❤️"
+    hashtags = "#reels #trending #viral #explore #instagram " + " ".join(SEO_TAGS[:3])
+
     return {
-        "filename": dl_filename,
-        "title": title,
-        "hindi_text": final_hindi_text,
+        "filename": filename,
+        "title": "Instagram Reel",
+        "hindi_text": hindi_text,
         "hashtags": hashtags,
         "original_url": url
     }
@@ -189,86 +140,50 @@ def upload_to_catbox(filepath):
     print("🚀 Uploading to Catbox...")
     try:
         with open(filepath, "rb") as f:
-            # Timeout add kiya taaki hang na ho
-            response = requests.post(
-                "https://catbox.moe/user/api.php", 
-                data={"reqtype": "fileupload"}, 
-                files={"fileToUpload": f},
-                timeout=60
-            )
+            response = requests.post("https://catbox.moe/user/api.php", data={"reqtype": "fileupload"}, files={"fileToUpload": f}, timeout=60)
             if response.status_code == 200:
-                link = response.text.strip()
-                print(f"✅ Uploaded: {link}")
-                return link
-            else:
-                print(f"⚠️ Catbox Upload Failed: {response.status_code}")
-                return None
-    except Exception as e:
-        print(f"⚠️ Catbox Error: {e}")
-        return None
+                return response.text.strip()
+    except: pass
+    return None
 
 def send_notifications(video_data, catbox_url):
     print("\n--- Sending Notifications ---")
-    tg_caption = f"{video_data['hindi_text']}\n.\n.\n.\n.\n.\n{video_data['hashtags']}"
+    tg_caption = f"{video_data['hindi_text']}\n.\n.\n{video_data['hashtags']}"
     
-    # 1. TELEGRAM (Video File)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         print("📤 Telegram Video Sending...")
         tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
         try:
             with open(video_data['filename'], 'rb') as video_file:
-                payload = {
-                    "chat_id": str(TELEGRAM_CHAT_ID), 
-                    "caption": tg_caption, 
-                    "parse_mode": "Markdown"
-                }
+                payload = {"chat_id": str(TELEGRAM_CHAT_ID), "caption": tg_caption, "parse_mode": "Markdown"}
                 files = {'video': video_file}
                 requests.post(tg_url, data=payload, files=files, timeout=60)
                 print("✅ Telegram Sent!")
         except Exception as e: print(f"❌ Telegram Error: {e}")
 
-    # 2. WEBHOOK (Catbox URL Only)
-    if WEBHOOK_URL:
-        if catbox_url and "catbox.moe" in catbox_url:
-            print(f"📤 Webhook Sending...")
-            payload = {
-                "content": tg_caption, 
-                "video_url": catbox_url,
-                "title_original": video_data['title']
-            }
-            try: 
-                requests.post(WEBHOOK_URL, json=payload, timeout=30)
-                print("✅ Webhook Sent!")
-            except Exception as e: print(f"❌ Webhook Error: {e}")
-        else:
-            print("⚠️ Webhook skipped: Catbox link missing.")
+    if WEBHOOK_URL and catbox_url:
+        print(f"📤 Webhook Sending...")
+        payload = {"content": tg_caption, "video_url": catbox_url}
+        try: requests.post(WEBHOOK_URL, json=payload, timeout=30)
+        except: pass
 
 def update_history(url):
     with open(HISTORY_FILE, 'a') as f: f.write(url + '\n')
 
-# --- MAIN EXECUTION ---
 if __name__ == "__main__":
     next_url = get_next_video()
     if not next_url:
-        print("💤 No new videos found in videos.txt")
+        print("💤 No new videos.")
         sys.exit(0)
     
-    data = download_video_data(next_url)
+    data = process_video(next_url)
     
     if data and data['filename']:
-        # Catbox upload zaroori hai Webhook ke liye
         catbox_link = upload_to_catbox(data['filename'])
-        
         send_notifications(data, catbox_link)
         update_history(next_url)
-        
-        # Cleanup
         if os.path.exists(data['filename']): os.remove(data['filename'])
-        # Subtitles cleanup
-        for f in glob.glob("temp_video*.vtt"):
-            os.remove(f)
-            
-        print("✅ Task Completed Successfully.")
+        print("✅ Task Completed.")
     else:
-        print("❌ Task Failed: Video download or processing error.")
+        print("❌ Task Failed.")
         sys.exit(1)
